@@ -23,6 +23,8 @@ class CavesBookCrawler
 
   def books
     @books = {}
+    @page_threads = []
+    @detail_threads = []
 
     visit @index_url
 
@@ -33,8 +35,9 @@ class CavesBookCrawler
     # 真是有病的寫法 XDD
     second_level_categories = %w(.menu_body .menu_head).map{|klass| Hash[ @doc.css("#{klass} a").map{|a| [a.text.tr('‧','') , URI.join(@index_url, a[:href]).to_s ] } ] }.inject{|arr, nxt| arr.merge(nxt) }
 
-    second_level_categories.each do |category_name, category_url|
-
+    second_level_categories.each do |category_name|
+      category_url = second_level_categories[category_name]
+      print "start category: #{category_name}\n"
       r = RestClient.get category_url
       doc = Nokogiri::HTML(r)
 
@@ -43,13 +46,21 @@ class CavesBookCrawler
       parse_book_list(doc)
 
       (2..page_num).each do |i|
-        r = RestClient.get "#{category_url}&PG=#{i}"
-        doc = Nokogiri::HTML(r)
+        sleep(1) until (
+          @page_threads.delete_if { |t| !t.status };  # remove dead (ended) threads
+          @page_threads.count < (ENV['MAX_THREADS'] || 10)
+        )
+        @page_threads << Thread.new do
+          r = RestClient.get "#{category_url}&PG=#{i}"
+          doc = Nokogiri::HTML(r)
 
-        parse_book_list(doc)
+          parse_book_list(doc)
+        end
       end if page_num && page_num > 1
 
     end
+    ThreadsWait.all_waits(*@page_threads)
+    ThreadsWait.all_waits(*@detail_threads)
 
     @books.values
   end
@@ -78,22 +89,28 @@ class CavesBookCrawler
   end
 
   def parse_book_detail url
-    r = RestClient.get url
-    doc = Nokogiri::HTML(r)
+    sleep(1) until (
+      @detail_threads.delete_if { |t| !t.status };  # remove dead (ended) threads
+      @detail_threads.count < (ENV['MAX_THREADS'] || 30)
+    )
+    @detail_threads << Thread.new do
+      r = RestClient.get url
+      doc = Nokogiri::HTML(r)
 
-    doc.css('.bookDateBox tr').map{ |tr| tr.text.strip }.each do |attr_data|
-      key = attr_data.rpartition('：')[0]
-      @books[url][ATTR_HASH[key]] = attr_data.rpartition('：')[-1].strip if ATTR_HASH[key]
+      doc.css('.bookDateBox tr').map{ |tr| tr.text.strip }.each do |attr_data|
+        key = attr_data.rpartition('：')[0]
+        @books[url][ATTR_HASH[key]] = attr_data.rpartition('：')[-1].strip if ATTR_HASH[key]
+      end
+
+      @books[url][:isbn].gsub!(/-/, '')
+
+      begin
+        @books[url][:isbn] = isbn_to_13(@books[url][:isbn])
+      rescue Exception => e
+        @books[url][:isbn] = nil
+      end
+      print "|"
     end
-
-    @books[url][:isbn].gsub!(/-/, '')
-
-    begin
-      @books[url][:isbn] = isbn_to_13(@books[url][:isbn])
-    rescue Exception => e
-      @books[url][:isbn] = nil
-    end
-
   end
 
   def save_temp r
@@ -133,4 +150,4 @@ class CavesBookCrawler
 end
 
 cc = CavesBookCrawler.new
-File.write('caves_book.json', cc.books)
+File.write('caves_book.json', JSON.pretty_generate(cc.books))
