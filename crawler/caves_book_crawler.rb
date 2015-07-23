@@ -3,6 +3,7 @@ require 'pry'
 require 'json'
 require 'iconv'
 require 'isbn'
+require 'book_toolkit'
 
 require 'thread'
 require 'thwait'
@@ -17,7 +18,10 @@ class CavesBookCrawler
     "出 版 社" => :publisher,
   }
 
-  def initialize
+  def initialize update_progress: nil, after_each: nil
+    @update_progress_proc = update_progress
+    @after_each_proc = after_each
+
     @index_url = "http://www.cavesbooks.com.tw/EC/"
   end
 
@@ -35,8 +39,8 @@ class CavesBookCrawler
     # 真是有病的寫法 XDD
     second_level_categories = %w(.menu_body .menu_head).map{|klass| Hash[ @doc.css("#{klass} a").map{|a| [a.text.tr('‧','') , URI.join(@index_url, a[:href]).to_s ] } ] }.inject{|arr, nxt| arr.merge(nxt) }
 
-    second_level_categories.each do |category_name|
-      category_url = second_level_categories[category_name]
+    second_level_categories.each do |category_name, category_url|
+      # category_url = second_level_categories[category_name]
       print "start category: #{category_name}\n"
       r = RestClient.get category_url
       doc = Nokogiri::HTML(r)
@@ -69,7 +73,7 @@ class CavesBookCrawler
     doc.xpath('//ul[@class="booksList"]/li').each do |list_item|
       # external_image_url = URI.join(@index_url, list_item.xpath('div[@class="booksListL"]/a/img/@src').to_s).to_s
       url = URI.join(@index_url,  list_item.xpath('div[@class="booksListL"]/a/@href').to_s).to_s
-      price = list_item.xpath('div[@class="booksListR"]/div').text.match(/(?<=定   價：NT\s)\d+/).to_s.to_i
+      original_price = list_item.xpath('div[@class="booksListR"]/div').text.match(/(?<=定   價：NT\s)\d+/).to_s.to_i
       name = list_item.xpath('div[@class="booksListC"]/h3/a').text
 
       author_pub_str = list_item.xpath('div[@class="booksListC"]/h4').text.strip
@@ -79,9 +83,10 @@ class CavesBookCrawler
       @books[url] = {
         name: name,
         url: url,
-        price: price,
+        original_price: original_price,
         author: author,
-        publisher: publisher
+        publisher: publisher,
+        known_supplier: 'caves'
       }
 
       parse_book_detail(url)
@@ -105,11 +110,12 @@ class CavesBookCrawler
       @books[url][:isbn].gsub!(/-/, '')
 
       begin
-        @books[url][:isbn] = isbn_to_13(@books[url][:isbn])
+        @books[url][:isbn] = BookToolkit.to_isbn13(@books[url][:isbn])
       rescue Exception => e
         @books[url][:isbn] = nil
       end
-      print "|"
+      @after_each_proc.call(book: @books[url]) if @after_each_proc
+      # print "|"
     end
   end
 
@@ -117,37 +123,7 @@ class CavesBookCrawler
     File.write('tmp.html', r)
   end
 
-  def isbn_to_13 isbn
-    case isbn.length
-    when 13
-      return ISBN.thirteen isbn
-    when 10
-      return ISBN.thirteen isbn
-    when 12
-      return "#{isbn}#{isbn_checksum(isbn)}"
-    when 9
-      return ISBN.thirteen("#{isbn}#{isbn_checksum(isbn)}")
-    end
-  end
-
-  def isbn_checksum(isbn)
-    isbn.gsub!(/[^(\d|X)]/, '')
-    c = 0
-    if isbn.length <= 10
-      10.downto(2) {|i| c += isbn[10-i].to_i * i}
-      c %= 11
-      c = 11 - c
-      c ='X' if c == 10
-      return c
-    elsif isbn.length <= 13
-      (1..11).step(2) {|i| c += isbn[i].to_i}
-      c *= 3
-      (0..11).step(2) {|i| c += isbn[i].to_i}
-      c = (220-c) % 10
-      return c
-    end
-  end
 end
 
-cc = CavesBookCrawler.new
-File.write('caves_book.json', JSON.pretty_generate(cc.books))
+# cc = CavesBookCrawler.new
+# File.write('caves_book.json', JSON.pretty_generate(cc.books))
