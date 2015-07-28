@@ -98,7 +98,7 @@ class CavesBookCrawler
       @detail_threads.delete_if { |t| !t.status };  # remove dead (ended) threads
       @detail_threads.count < (ENV['MAX_THREADS'] || 30)
     )
-    @detail_threads << Thread.new do
+    # @detail_threads << Thread.new do
       r = RestClient.get url
       doc = Nokogiri::HTML(r)
 
@@ -114,9 +114,12 @@ class CavesBookCrawler
       rescue Exception => e
         @books[url][:isbn] = nil
       end
+
+      external_image_url = doc.css('.thumbs img').empty? ? nil : URI.join(@index_url, doc.css('.thumbs img').first[:src]).to_s
+
       @after_each_proc.call(book: @books[url]) if @after_each_proc
       # print "|"
-    end
+    # end # end detail thread
   end
 
   def save_temp r
